@@ -7,6 +7,8 @@ from langchain_core.documents import Document
 from dotenv import load_dotenv
 import os
 from typing import List
+from langsmith import traceable
+
 
 load_dotenv(override = True)
 
@@ -75,6 +77,10 @@ class HybridRetrieval:
             [Document(page_content= doc) for doc in all_docs['documents']],
             k = self.k
         )
+
+    def format_docs(self, docs):
+        return "\n\n".join([doc.page_content for doc in docs])
+    
 
 retriever = HybridRetrieval(documents, bm25_weight=0.5, k = 4)
 results = retriever.search('SKU-7742X specifications')
