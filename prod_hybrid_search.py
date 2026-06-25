@@ -8,6 +8,9 @@ from dotenv import load_dotenv
 import os
 from typing import List
 from langsmith import traceable
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 
 
 load_dotenv(override = True)
@@ -62,7 +65,9 @@ class HybridRetrieval:
         self.vector_store = Chroma.from_documents(documents, self.embeddings, collection_name = "hybrid_search")
         self.vector_retriever  = self.vector_store.as_retriever(search_kwargs = {'k': k})
         self.bm25_retriever = BM25Retriever.from_documents(documents, k = k)
+        self.llm_model = ChatGoogleGenerativeAI(model = "gemini-2.5-flash-lite", api_key = os.environ['GOOGLE_API_KEY'])
 
+    @traceable(name="Ensemble Search Check", run_type="retriever")
     def search(self, query: str) -> List[Document]:
         return hybrid_retriever(query, 
                                 retriever = [self.bm25_retriever, self.vector_retriever], 
@@ -80,11 +85,41 @@ class HybridRetrieval:
 
     def format_docs(self, docs):
         return "\n\n".join([doc.page_content for doc in docs])
+
+    @traceable(name="RAG pipeline check", run_type="chain")
+    def call_llm(self, question):
+        prompt_template = ChatPromptTemplate.from_template(
+            """
+            Answer the questions only on the following context and also when you specify make sure to specify current date to the user
+            {context}
+            Question: {question}
+
+            Answer: 
+
+            Make sure to respond in concise manner and if you don't know the answer, say you don't know.
+            """
+        )
+
+        rag_chain = (
+            {'context': RunnableLambda(self.search) | self.format_docs, 'question': RunnablePassthrough()}
+            | prompt_template
+            | self.llm_model
+            | StrOutputParser()
+        )
+
+        try:
+            result = rag_chain.invoke(question)
+            return result
+
+        except Exception as e:
+            print(f"Unable to invoke RAG chain : {e}")
+
+
     
 
 retriever = HybridRetrieval(documents, bm25_weight=0.5, k = 4)
-results = retriever.search('SKU-7742X specifications')
-for doc in results:
-    print(f"The retrived content : {doc.page_content[:100]}")
+query2 = "How authentication works?"
+result = retriever.call_llm(query2)
+print(result)
     
 
