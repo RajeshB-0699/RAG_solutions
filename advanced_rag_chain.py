@@ -1,25 +1,22 @@
-from langchain_classic.retrievers.multi_query import MultiQueryRetriever
+from langchain_core.documents import Document
+from langchain_chroma import Chroma
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_classic.retrievers import MultiQueryRetriever
 from langchain_classic.retrievers import ContextualCompressionRetriever
 from langchain_classic.retrievers.document_compressors import LLMChainExtractor
 from langchain_classic.retrievers import EnsembleRetriever
 from langchain_community.retrievers import BM25Retriever
-from langchain_classic.retrievers import ParentDocumentRetriever
-from langchain_classic.storage import InMemoryStore
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough, RunnableParallel, RunnableLambda
-from langchain_core.documents import Document
-from langchain_chroma import Chroma
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from dotenv import load_dotenv
-import logging
 import os
+import logging
 
 load_dotenv(override = True)
 
 logging.basicConfig(level=logging.INFO, format="%(name)s - %(message)s")
 logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.INFO)
-
 
 TECH_DOCS = [
     Document(
@@ -84,61 +81,63 @@ TECH_DOCS = [
     ),
 ]
 
+def create_vector_base():
+    embeddings = GoogleGenerativeAIEmbeddings(model = "gemini-embedding-001", api_key = os.environ['GOOGLE_API_KEY'])
+    vector_store = Chroma.from_documents(
+        documents= TECH_DOCS,
+        embedding= embeddings
+    )
+    return vector_store
 
+def advanced_rag_chain():
+    vector_store = create_vector_base()
+    vetor_retriever = vector_store.as_retriever(search_kwargs= {'k':3})
+    llm = ChatGoogleGenerativeAI(model = "gemini-2.5-flash", api_key = os.environ['GOOGLE_API_KEY'])
 
-# for doc in TECH_DOCS:
-#     print(f"\n\nDocument content: {doc.page_content}")
-
-def create_base_vectorstore():
-    embeddings = GoogleGenerativeAIEmbeddings(model = "gemini-embedding-001", api__key = os.environ['GOOGLE_API_KEY'])
-    return Chroma.from_documents(documents = TECH_DOCS, embedding = embeddings)
-
-def demo_multi_query_retriever():
-    print("="*60)
-    print("Multi-Query Retriever")
-    print("Generate multiple perspectives on your question")
-    print("="*60)
-
-    logging.basicConfig()
-    logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.INFO)
-
-    vector_store = create_base_vectorstore()
-    llm = ChatGoogleGenerativeAI(model = "gemini-2.5-flash-lite", api_key =os.environ["GOOGLE_API_KEY"])
-
-    vector_store_retriever = vector_store.as_retriever(search_kwargs = {"k":2})
-    
-    retriever = MultiQueryRetriever.from_llm(
-        retriever = vector_store_retriever, 
-        llm = llm
+    multi_retriever = MultiQueryRetriever.from_llm(
+        llm = llm,
+        retriever= vetor_retriever
     )
 
-    query = "What tools can I use to build AI applications?"
+    compressor = LLMChainExtractor.from_llm(llm)
+    context_compressor = ContextualCompressionRetriever(
+        base_compressor=compressor, 
+        base_retriever=multi_retriever
+    )
 
-    print(f"\nOriginal Query: {query}\n")
+    prompt = ChatPromptTemplate.from_template(
+        """
+Answer the question based on the following context. Be specific and cite which technologies you're referring to.
 
-    print("\nThe retriever will generate multiple query variations...")
-    print("(Check INFO logs for generated queries)\n")
+Context:
+{context}
 
-    docs = retriever.invoke(query)
+Question: {question}
 
-    return docs
+Answer:"""
+    )
 
 
-def format_docs(docs):
-    print(f"Retrieved {len(docs)} unique documents:")
-    for i, doc in enumerate(docs):
-        print(f"\n{i+1}. [{doc.metadata.get('topic', 'N/A')}]: {doc.page_content}...")
-        
+    def fomat_docs(docs):
+        return "\n]n".join([doc.page_content for doc in docs])
+    
+    rag_chain = ({'context': context_compressor | fomat_docs , 'question': RunnablePassthrough()} 
+                | prompt
+                | llm
+                | StrOutputParser()
+                )
+    
+    questions = [
+        "What options do I have for building AI agents?",
+        "How can I store and search embeddings?",
+    ]
+
+    for q in questions:
+        print(f"\nQ: {q}")
+        answer = rag_chain.invoke(q)
+        print(f"A: {answer}")
+
+
 
 if __name__ == "__main__":
-    result = demo_multi_query_retriever()
-    final_formatted_result = format_docs(result)
-    print(final_formatted_result)
-    print("\n" + "="*60 + "\n")
-    # normal_result = demo_normal_retriever()
-    # final_normal_formatted_result = format_docs(normal_result)
-    # print(final_normal_formatted_result)
-    
-  
-
-
+    advanced_rag_chain()
